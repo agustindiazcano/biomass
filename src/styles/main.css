@@ -1,0 +1,31 @@
+html, body {
+    overflow: hidden;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    background: #222;
+    font-family: Arial, sans-serif;
+}
+
+#renderCanvas {
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+    cursor: crosshair;
+    display: block;
+}
+
+#damage-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    background: radial-gradient(circle, transparent 50%, rgba(255, 0, 0, 0.9) 100%);
+    opacity: 0;
+    transition: opacity 0.1s;
+    z-index: 10;
+}
+

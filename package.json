@@ -1,0 +1,23 @@
+{
+  "name": "marine-survival-game",
+  "version": "1.0.0",
+  "description": "Marine Survival - Big Bullets - A 3D survival game built with Babylon.js",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "keywords": ["game", "babylonjs", "3d", "survival"],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "vite": "^5.0.0"
+  },
+  "dependencies": {
+    "@babylonjs/core": "^6.0.0",
+    "@babylonjs/gui": "^6.0.0",
+    "@babylonjs/loaders": "^6.0.0"
+  }
+}
+

@@ -1,0 +1,1170 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+    <title>Marine Survival - Vehiculos Update</title>
+    <script src="https://cdn.babylonjs.com/babylon.js"></script>
+    <script src="https://cdn.babylonjs.com/gui/babylon.gui.min.js"></script>
+    
+    <style>
+        html, body { overflow: hidden; width: 100%; height: 100%; margin: 0; padding: 0; background: #222; }
+        #renderCanvas { width: 100%; height: 100%; touch-action: none; cursor: crosshair; }
+        #damage-overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none;
+            background: radial-gradient(circle, transparent 50%, rgba(255, 0, 0, 0.9) 100%);
+            opacity: 0; transition: opacity 0.1s; z-index: 10;
+        }
+    </style>
+</head>
+<body>
+    <div id="damage-overlay"></div>
+    <canvas id="renderCanvas"></canvas>
+    <script>
+        const canvas = document.getElementById("renderCanvas");
+        const engine = new BABYLON.Engine(canvas, true);
+        const damageDiv = document.getElementById("damage-overlay");
+        let damageAlpha = 0;
+
+        const cursorBlueArrow = `url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><polygon points="0,0 0,24 16,12" fill="cyan" stroke="white" stroke-width="2"/></svg>'), auto`;
+
+        const createScene = function () {
+            const scene = new BABYLON.Scene(engine);
+            
+            // --- 0. VARIABLES Y ESTADO DEL JUEGO ---
+            const inputMap = {}; 
+            const enemies = []; 
+            const projectiles = [];
+            const drops = [];
+            const drones = [];
+            let editorObjects = []; 
+            let spawnPoints = []; 
+            // NUEVO: Array para vehículos
+            let vehicles = []; 
+            let isDriving = false;
+            let currentVehicle = null;
+
+            let isPaused = false;
+            let isEditorMode = false; 
+            let editorModeAction = null; 
+            let selectedEditorObject = null;
+            let selectedEnemyTypeForSpawn = "alien"; 
+            let isMiddleMouseDown = false; 
+
+            // Variables de estado del juego
+            let gold = 0;
+            let time = 0; 
+            
+            let playerHealth = 100; let playerMaxHealth = 100;
+            let playerArmor = 0; let playerXP = 0; let playerMaxXP = 100; let playerLevel = 1;
+            
+            let rifleDamage = 35; 
+            let droneHealLevel = 0; let droneAttackLevel = 0;
+            let lastFireTime = 0; let isMouseDown = false; 
+
+            let currentWave = 1; const maxWaves = 100;
+            let enemiesKilledInWave = 0; let enemiesRequiredForWave = 20;
+            let baseSpawnRate = 2500; let currentSpawnRate = baseSpawnRate; let lastSpawnTime = 0;
+            let baseEnemyDamage = 3; let currentEnemyDamage = baseEnemyDamage;
+
+            let playerStartPos = new BABYLON.Vector3(0, 0.9, 0); 
+
+            // Variables de Armas
+            let ammo = 100; let isReloading = false; let machineGunRate = 100;
+
+            // Variables de Tienda
+            let unlockedWeapons = { 1: true, 2: false, 3: false, 4: false };
+            let currentWeapon = 1;
+
+            // --- 1. AMBIENTE ---
+            scene.clearColor = new BABYLON.Color3(0.1, 0.1, 0.1); 
+            scene.fogMode = BABYLON.Scene.FOGMODE_EXP;
+            scene.fogDensity = 0.01;
+            scene.fogColor = new BABYLON.Color3(0.1, 0.1, 0.1);
+
+            const hemiLight = new BABYLON.HemisphericLight("hemi", new BABYLON.Vector3(0, 1, 0), scene);
+            hemiLight.intensity = 0.1; 
+            hemiLight.diffuse = new BABYLON.Color3(1, 1, 1);
+            hemiLight.groundColor = new BABYLON.Color3(0.2, 0.2, 0.2);
+
+            const dirLight = new BABYLON.DirectionalLight("dir01", new BABYLON.Vector3(-1, -2, -1), scene);
+            dirLight.position = new BABYLON.Vector3(20, 40, 20);
+            dirLight.intensity = 0.2;
+            
+            const shadowGenerator = new BABYLON.ShadowGenerator(2048, dirLight);
+            shadowGenerator.useBlurExponentialShadowMap = true;
+
+            // Texturas y Materiales
+            const mainTexture = new BABYLON.Texture("./textures/alienterrain.png", scene);
+            mainTexture.uScale = 10; mainTexture.vScale = 10;
+            
+            const ground = BABYLON.MeshBuilder.CreateGround("ground", {width: 200, height: 200}, scene);
+            const groundMat = new BABYLON.StandardMaterial("groundMat", scene);
+            groundMat.diffuseTexture = mainTexture;
+            groundMat.specularColor = new BABYLON.Color3(0, 0, 0); 
+            groundMat.maxSimultaneousLights = 10; 
+            ground.material = groundMat;
+            ground.receiveShadows = true;
+            ground.isPickable = true; 
+
+            const gl = new BABYLON.GlowLayer("glow", scene);
+            gl.intensity = 0.5;
+
+            // Materiales para el editor
+            const spawnPointMat = new BABYLON.StandardMaterial("spawnPointMat", scene);
+            spawnPointMat.diffuseColor = new BABYLON.Color3(0, 1, 0); 
+            spawnPointMat.emissiveColor = new BABYLON.Color3(0, 0.5, 0);
+            spawnPointMat.alpha = 0.5;
+
+            const playerStartMat = new BABYLON.StandardMaterial("playerStartMat", scene);
+            playerStartMat.diffuseColor = new BABYLON.Color3(1, 0, 0); 
+            playerStartMat.emissiveColor = new BABYLON.Color3(0.5, 0, 0);
+            playerStartMat.alpha = 0.5;
+
+            const editorCubeMat = new BABYLON.StandardMaterial("editorCubeMat", scene);
+            editorCubeMat.diffuseColor = new BABYLON.Color3(0.5, 0.5, 0.5); 
+
+            // --- 2. JUGADOR ---
+            const player = BABYLON.MeshBuilder.CreateBox("player", {height: 1.8, width: 1, depth: 1}, scene);
+            player.position = playerStartPos.clone();
+            const playerMat = new BABYLON.StandardMaterial("playerMat", scene);
+            playerMat.diffuseColor = new BABYLON.Color3(1, 1, 1); 
+            playerMat.emissiveColor = new BABYLON.Color3(0.1, 0.1, 0.1); 
+            playerMat.maxSimultaneousLights = 10; 
+            player.material = playerMat;
+            shadowGenerator.addShadowCaster(player);
+
+            const playerHead = BABYLON.MeshBuilder.CreateSphere("pHead", {diameter: 0.7}, scene);
+            playerHead.position.y = 1.0; playerHead.parent = player;
+            const headMat = new BABYLON.StandardMaterial("headMat", scene);
+            headMat.diffuseColor = new BABYLON.Color3(0, 0, 0); 
+            playerHead.material = headMat;
+
+            const gunMesh = BABYLON.MeshBuilder.CreateBox("gun", {width: 0.15, height: 0.15, depth: 0.8}, scene);
+            gunMesh.parent = player;
+            gunMesh.position = new BABYLON.Vector3(0.5, 0.2, 0.5);
+            const gunMat = new BABYLON.StandardMaterial("gunMat", scene);
+            gunMat.diffuseColor = new BABYLON.Color3(0.1, 0.1, 0.1);
+            gunMesh.material = gunMat;
+
+            const flashlight = new BABYLON.SpotLight("flashlight", new BABYLON.Vector3(0, 3, 0), new BABYLON.Vector3(0, -0.5, 1.5), Math.PI / 2.2, 15, scene);
+            flashlight.parent = player; flashlight.diffuse = new BABYLON.Color3(1, 1, 1); flashlight.intensity = 8.0; flashlight.range = 90;
+            const haloLight = new BABYLON.PointLight("halo", new BABYLON.Vector3(0, 2, 0), scene);
+            haloLight.parent = player; haloLight.diffuse = new BABYLON.Color3(0.5, 0.5, 1); haloLight.intensity = 2; haloLight.range = 10; 
+
+            // --- CÁMARA ---
+            const camera = new BABYLON.ArcRotateCamera("Camera", -Math.PI / 2, Math.PI / 3.2, 30, player.position, scene);
+            camera.inputs.clear(); 
+
+            // --- UI (CREACIÓN) ---
+            const advancedTexture = BABYLON.GUI.AdvancedDynamicTexture.CreateFullscreenUI("UI");
+            
+            // EDITOR UI
+            const editorPanel = new BABYLON.GUI.StackPanel();
+            editorPanel.width = "200px"; editorPanel.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_RIGHT; editorPanel.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_CENTER;
+            editorPanel.isVisible = false; 
+            advancedTexture.addControl(editorPanel);
+
+            const createEditorBtn = (text, action) => {
+                const btn = BABYLON.GUI.Button.CreateSimpleButton("btnEditor" + text, text);
+                btn.width = "180px"; btn.height = "40px"; btn.color = "white"; btn.background = "#333"; btn.fontSize = 14;
+                btn.onPointerUpObservable.add(() => {
+                    editorModeAction = action;
+                    updateEditorButtons(btn);
+                });
+                editorPanel.addControl(btn);
+                return btn;
+            };
+
+            const updateEditorButtons = (activeBtn) => {
+                editorPanel.children.forEach(child => {
+                    if (child instanceof BABYLON.GUI.Button) {
+                        child.background = "#333";
+                    }
+                });
+                if (activeBtn) activeBtn.background = "green";
+            }
+
+            const btnMove = createEditorBtn("Mover/Seleccionar", "move");
+            const btnPaint = createEditorBtn("Pintar Suelo", "paint");
+            const btnAddCube = createEditorBtn("Agregar Cubo", "addCube");
+            const btnAddWall = createEditorBtn("Agregar Pared", "addWall");
+            // NUEVO BOTÓN
+            const btnAddVehicle = createEditorBtn("Agregar Vehículo", "addVehicle");
+            const btnSetSpawn = createEditorBtn("Punto Spawn Enemigo", "setSpawn");
+            const btnSetPlayerStart = createEditorBtn("Posición Inicial Jugador", "setPlayerStart");
+
+            const spawnTypePanel = new BABYLON.GUI.StackPanel();
+            spawnTypePanel.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
+            editorPanel.addControl(spawnTypePanel);
+
+            const spawnTypeLabel = new BABYLON.GUI.TextBlock(); spawnTypeLabel.text = "Tipo de Enemigo Spawn:"; spawnTypeLabel.color = "white"; spawnTypeLabel.height = "30px"; spawnTypeLabel.fontSize = 14;
+            spawnTypePanel.addControl(spawnTypeLabel);
+
+            const createSpawnTypeBtn = (type, text) => {
+                const btn = BABYLON.GUI.Button.CreateSimpleButton("btnSpawn" + type, text);
+                btn.width = "180px"; btn.height = "30px"; btn.color = "white"; btn.background = type === selectedEnemyTypeForSpawn ? "green" : "#333"; btn.fontSize = 12;
+                btn.onPointerUpObservable.add(() => {
+                    selectedEnemyTypeForSpawn = type;
+                    spawnTypeAlienBtn.background = type === "alien" ? "green" : "#333";
+                    spawnTypeWormBtn.background = type === "worm" ? "green" : "#333";
+                });
+                spawnTypePanel.addControl(btn);
+                return btn;
+            }
+            const spawnTypeAlienBtn = createSpawnTypeBtn("alien", "Alien");
+            const spawnTypeWormBtn = createSpawnTypeBtn("worm", "Gusano");
+
+            const btnStartGame = BABYLON.GUI.Button.CreateSimpleButton("btnStart", "START GAME");
+            btnStartGame.width = "180px"; btnStartGame.height = "50px"; btnStartGame.color = "white"; btnStartGame.background = "blue"; btnStartGame.fontSize = 16; btnStartGame.top = "20px";
+            btnStartGame.onPointerUpObservable.add(() => {
+                toggleEditorMode();
+                resetGame();
+            });
+            editorPanel.addControl(btnStartGame);
+
+            const btnSaveScene = BABYLON.GUI.Button.CreateSimpleButton("btnSave", "GUARDAR SCENE & JSON");
+            btnSaveScene.width = "180px"; btnSaveScene.height = "50px"; btnSaveScene.color = "white"; btnSaveScene.background = "orange"; btnSaveScene.fontSize = 16; btnSaveScene.top = "40px";
+            btnSaveScene.onPointerUpObservable.add(() => {
+                saveSceneData();
+            });
+            editorPanel.addControl(btnSaveScene);
+
+            // UI JUEGO NORMAL
+            const hudPanel = new BABYLON.GUI.StackPanel();
+            hudPanel.width = "250px"; hudPanel.horizontalAlignment = 0; hudPanel.verticalAlignment = 0; hudPanel.top = "20px"; hudPanel.left = "20px";
+            advancedTexture.addControl(hudPanel);
+
+            const createBar = (label, color) => {
+                const txt = new BABYLON.GUI.TextBlock(); txt.text = label; txt.color = "white"; txt.fontSize = 14; txt.height = "20px"; txt.textHorizontalAlignment = 0;
+                hudPanel.addControl(txt);
+                const cont = new BABYLON.GUI.Rectangle(); cont.width = "200px"; cont.height = "10px"; cont.color = "white"; cont.background = "black"; cont.horizontalAlignment = 0;
+                hudPanel.addControl(cont);
+                const bar = new BABYLON.GUI.Rectangle(); bar.width = "0px"; bar.height = "10px"; bar.color = "transparent"; bar.background = color; bar.horizontalAlignment = 0;
+                cont.addControl(bar);
+                return { text: txt, bar: bar };
+            }
+            const hpUI = createBar("SALUD", "green");
+            const armorUI = createBar("ARMADURA: 0%", "gray");
+            const xpUI = createBar("XP (Nivel 1)", "cyan");
+            const goldText = new BABYLON.GUI.TextBlock();
+            goldText.text = "ORO: 0"; goldText.color = "#FFD700"; goldText.fontSize = 20; goldText.height = "30px"; goldText.textHorizontalAlignment = 0;
+            hudPanel.addControl(goldText);
+            const weaponText = new BABYLON.GUI.TextBlock();
+            weaponText.text = "RIFLE (1)"; weaponText.color = "white"; weaponText.fontSize = 18; weaponText.height = "30px"; weaponText.textHorizontalAlignment = 0;
+            hudPanel.addControl(weaponText);
+
+            // Texto de ayuda para vehiculo
+            const vehicleHelpText = new BABYLON.GUI.TextBlock();
+            vehicleHelpText.text = ""; vehicleHelpText.color = "yellow"; vehicleHelpText.fontSize = 20; vehicleHelpText.top = "100px";
+            advancedTexture.addControl(vehicleHelpText);
+
+            const wavePanel = new BABYLON.GUI.StackPanel();
+            wavePanel.verticalAlignment = 0; wavePanel.horizontalAlignment = 2; wavePanel.top = "10px";
+            advancedTexture.addControl(wavePanel);
+            const waveTitle = new BABYLON.GUI.TextBlock();
+            waveTitle.text = "WAVE 1"; waveTitle.color = "orange"; waveTitle.fontSize = 30; waveTitle.fontWeight = "bold"; waveTitle.height = "40px";
+            wavePanel.addControl(waveTitle);
+            const waveProgressContainer = new BABYLON.GUI.Rectangle();
+            waveProgressContainer.width = "400px"; waveProgressContainer.height = "20px"; waveProgressContainer.background = "black"; waveProgressContainer.color = "white";
+            wavePanel.addControl(waveProgressContainer);
+            const waveProgressBar = new BABYLON.GUI.Rectangle();
+            waveProgressBar.width = "0px"; waveProgressBar.height = "20px"; waveProgressBar.background = "#00BFFF"; waveProgressBar.horizontalAlignment = 0;
+            waveProgressContainer.addControl(waveProgressBar);
+            const waveProgressText = new BABYLON.GUI.TextBlock();
+            waveProgressText.text = "0%"; waveProgressText.color = "white"; waveProgressText.fontSize = 14;
+            waveProgressContainer.addControl(waveProgressText);
+
+            const radarContainer = new BABYLON.GUI.Ellipse();
+            radarContainer.width = "150px"; radarContainer.height = "150px";
+            radarContainer.color = "green"; radarContainer.thickness = 2;
+            radarContainer.background = "black"; radarContainer.alpha = 0.7;
+            radarContainer.horizontalAlignment = 0; radarContainer.verticalAlignment = 1;
+            radarContainer.left = "20px"; radarContainer.top = "-20px";
+            advancedTexture.addControl(radarContainer);
+            const radarCenter = new BABYLON.GUI.Ellipse();
+            radarCenter.width = "4px"; radarCenter.height = "4px"; radarCenter.background = "white";
+            radarContainer.addControl(radarCenter);
+            let radarDots = [];
+
+            // TIENDA UI
+            const shopContainer = new BABYLON.GUI.Rectangle();
+            shopContainer.width = "700px"; shopContainer.height = "600px"; shopContainer.background = "#0f0f15"; shopContainer.color = "cyan"; shopContainer.thickness = 2; shopContainer.isVisible = false;
+            advancedTexture.addControl(shopContainer);
+            const shopHeader = new BABYLON.GUI.TextBlock(); shopHeader.text = "TIENDA - PAUSA"; shopHeader.color = "cyan"; shopHeader.fontSize = 24; shopHeader.top = "-260px"; shopContainer.addControl(shopHeader);
+            const statsText = new BABYLON.GUI.TextBlock(); statsText.text = ""; statsText.color = "white"; statsText.fontSize = 16; statsText.top = "-220px"; shopContainer.addControl(statsText);
+
+            const btnNextWave = BABYLON.GUI.Button.CreateSimpleButton("btnNext", "COMENZAR SIGUIENTE OLEADA");
+            btnNextWave.width = "400px"; btnNextWave.height = "60px"; btnNextWave.color = "white"; btnNextWave.background = "green"; btnNextWave.top = "250px";
+            btnNextWave.onPointerUpObservable.add(() => { isPaused = false; shopContainer.isVisible = false; canvas.style.cursor = "crosshair"; updateHUD(); });
+            shopContainer.addControl(btnNextWave);
+
+            const createShopBtn = (text, price, action, top, left, checkBuy) => {
+                const btn = BABYLON.GUI.Button.CreateSimpleButton("btn", text + "\nCost: " + price);
+                btn.width = "200px"; btn.height = "60px"; btn.color = "white"; btn.background = "#222"; btn.top = top; btn.left = left; btn.fontSize = 14;
+                btn.onPointerUpObservable.add(() => { if(gold >= price) { if(checkBuy && checkBuy()) return; gold -= price; action(); updateShopUI(); updateHUD(); } });
+                shopContainer.addControl(btn);
+                return btn;
+            };
+
+            createShopBtn("Daño Rifle (+5)", 100, () => { rifleDamage += 5; }, "-150px", "-220px");
+            createShopBtn("Cadencia Rifle", 150, () => { machineGunRate = Math.max(20, machineGunRate - 10); }, "-150px", "0px");
+            createShopBtn("Botiquin (+50HP)", 50, () => { playerHealth = Math.min(playerMaxHealth, playerHealth + 50); }, "-150px", "220px");
+            createShopBtn("Armadura (+10%)", 80, () => { playerArmor = Math.min(80, playerArmor + 10); }, "-70px", "-220px");
+            createShopBtn("Drone: Curacion", 300, () => { droneHealLevel++; }, "-70px", "0px");
+            createShopBtn("Drone: Misiles", 300, () => { droneAttackLevel++; }, "-70px", "220px");
+            const btnAddDrone = createShopBtn("+1 DRON", 500, () => { createDrone(new BABYLON.Vector3(-1.5, 1.5, -1.5)); }, "10px", "0px");
+
+            const btnFlame = createShopBtn("Lanzallamas", 100, () => { unlockedWeapons[2] = true; }, "90px", "-220px", () => unlockedWeapons[2]);
+            const btnPlasma = createShopBtn("Plasma Gun", 200, () => { unlockedWeapons[3] = true; }, "90px", "0px", () => unlockedWeapons[3]);
+            const btnLaser = createShopBtn("Laser Rifle", 200, () => { unlockedWeapons[4] = true; }, "90px", "220px", () => unlockedWeapons[4]);
+
+            // --- FUNCIONES DE ACTUALIZACIÓN UI ---
+            const updateHUD = () => {
+                const hpP = Math.max(0, playerHealth / playerMaxHealth);
+                hpUI.bar.width = (hpP * 200) + "px"; hpUI.bar.background = hpP < 0.3 ? "red" : "green";
+                const xpP = playerXP / playerMaxXP;
+                xpUI.bar.width = (xpP * 200) + "px"; xpUI.text.text = "XP (Nivel " + playerLevel + ")";
+                armorUI.bar.width = (Math.min(1, playerArmor/50) * 200) + "px"; armorUI.text.text = "ARMADURA: " + playerArmor + "%";
+                goldText.text = "ORO: " + gold;
+                const wavePct = Math.min(1, enemiesKilledInWave / enemiesRequiredForWave);
+                waveProgressBar.width = (wavePct * 400) + "px";
+                waveProgressText.text = Math.floor(wavePct * 100) + "% (Matar " + (enemiesRequiredForWave - enemiesKilledInWave) + ")";
+                let wName = "RIFLE"; if(currentWeapon===2) wName="LANZALLAMAS"; if(currentWeapon===3) wName="PLASMA"; if(currentWeapon===4) wName="LASER RIFLE";
+                weaponText.text = wName + " (" + currentWeapon + ")";
+                if(isReloading && currentWeapon === 1) weaponText.text = "RECARGANDO...";
+                
+                // Texto de vehiculo
+                if (isDriving) {
+                    vehicleHelpText.text = "[E] BAJAR DEL VEHICULO";
+                } else {
+                    let nearVehicle = false;
+                    for(let v of vehicles) {
+                        if (BABYLON.Vector3.Distance(player.position, v.position) < 4) {
+                            nearVehicle = true; break;
+                        }
+                    }
+                    vehicleHelpText.text = nearVehicle ? "[E] CONDUCIR VEHICULO" : "";
+                }
+            };
+
+            const updateShopUI = () => { 
+                statsText.text = `ORO: ${gold} | Daño: ${rifleDamage} | Armor: ${playerArmor}%`; 
+                if(unlockedWeapons[2]) { btnFlame.background = "green"; btnFlame.children[0].text = "LANZALLAMAS (LISTO)"; }
+                if(unlockedWeapons[3]) { btnPlasma.background = "green"; btnPlasma.children[0].text = "PLASMA (LISTO)"; }
+                if(unlockedWeapons[4]) { btnLaser.background = "green"; btnLaser.children[0].text = "LASER (LISTO)"; }
+            };
+
+            // Gizmo para mover objetos
+            const gizmoManager = new BABYLON.GizmoManager(scene);
+            gizmoManager.positionGizmoEnabled = false; 
+            gizmoManager.rotationGizmoEnabled = false;
+            gizmoManager.scaleGizmoEnabled = false;
+            gizmoManager.usePointerToAttachGizmos = false;
+
+            const toggleEditorMode = () => {
+                isEditorMode = !isEditorMode;
+                isPaused = isEditorMode; 
+                editorPanel.isVisible = isEditorMode;
+                shopContainer.isVisible = false; 
+                canvas.style.cursor = isEditorMode ? cursorBlueArrow : "crosshair";
+                
+                if (isEditorMode) {
+                    editorModeAction = "move"; 
+                    updateEditorButtons(btnMove);
+                    hudPanel.isVisible = false;
+                    wavePanel.isVisible = false;
+                    radarContainer.isVisible = false;
+                    vehicleHelpText.isVisible = false;
+                    camera.detachControl(); 
+                } else {
+                    gizmoManager.attachToMesh(null); 
+                    selectedEditorObject = null;
+                    hudPanel.isVisible = true;
+                    wavePanel.isVisible = true;
+                    radarContainer.isVisible = true;
+                    vehicleHelpText.isVisible = true;
+                    // Resetear cámara al jugador
+                    camera.target.x = player.position.x;
+                    camera.target.z = player.position.z;
+                }
+            };
+
+            const handleEditorClick = (pickResult) => {
+                if (!pickResult.hit) return;
+                const mesh = pickResult.pickedMesh;
+                const pos = pickResult.pickedPoint.clone();
+
+                switch (editorModeAction) {
+                    case "move":
+                        // Permitir seleccionar vehiculos tambien
+                        if (editorObjects.includes(mesh) || spawnPoints.includes(mesh) || vehicles.includes(mesh) || mesh.name === "playerStartMarker") {
+                            selectedEditorObject = mesh;
+                            gizmoManager.attachToMesh(selectedEditorObject);
+                            gizmoManager.positionGizmoEnabled = true;
+                        } else if (mesh === ground) {
+                            gizmoManager.attachToMesh(null); 
+                            selectedEditorObject = null;
+                        }
+                        break;
+                    case "paint":
+                        if (mesh === ground) {
+                            const paintDecal = BABYLON.MeshBuilder.CreateDecal("decal", ground, {position: pos, normal: pickResult.getNormal(true), size: new BABYLON.Vector3(2, 2, 2)});
+                            const paintMat = new BABYLON.StandardMaterial("paintMat", scene);
+                            paintMat.diffuseColor = new BABYLON.Color3(Math.random(), Math.random(), Math.random());
+                            paintMat.zOffset = -1; 
+                            paintDecal.material = paintMat;
+                            editorObjects.push(paintDecal);
+                        }
+                        break;
+                    case "addCube":
+                        if (mesh === ground) {
+                            const cube = BABYLON.MeshBuilder.CreateBox("editorCube", {size: 2}, scene);
+                            cube.position = pos.add(new BABYLON.Vector3(0, 1, 0));
+                            cube.material = editorCubeMat;
+                            editorObjects.push(cube);
+                            shadowGenerator.addShadowCaster(cube);
+                            cube.checkCollisions = true;
+                            selectedEditorObject = cube;
+                            gizmoManager.attachToMesh(cube);
+                            gizmoManager.positionGizmoEnabled = true;
+                            editorModeAction = "move"; updateEditorButtons(btnMove);
+                        }
+                        break;
+                    case "addWall":
+                        if (mesh === ground) {
+                            const wall = BABYLON.MeshBuilder.CreateBox("editorWall", {width: 5, height: 3, depth: 0.5}, scene);
+                            wall.position = pos.add(new BABYLON.Vector3(0, 1.5, 0));
+                            wall.material = editorCubeMat;
+                            editorObjects.push(wall);
+                            shadowGenerator.addShadowCaster(wall);
+                            wall.checkCollisions = true;
+                            selectedEditorObject = wall;
+                            gizmoManager.attachToMesh(wall);
+                            gizmoManager.positionGizmoEnabled = true;
+                            editorModeAction = "move"; updateEditorButtons(btnMove);
+                        }
+                        break;
+                    case "addVehicle":
+                        if (mesh === ground) {
+                            const v = createVehicleMesh(pos.add(new BABYLON.Vector3(0, 1, 0)));
+                            selectedEditorObject = v;
+                            gizmoManager.attachToMesh(v);
+                            gizmoManager.positionGizmoEnabled = true;
+                            editorModeAction = "move"; updateEditorButtons(btnMove);
+                        }
+                        break;
+                    case "setSpawn":
+                        if (mesh === ground) {
+                            const spawnMarker = BABYLON.MeshBuilder.CreateBox("spawnPoint", {size: 1}, scene);
+                            spawnMarker.position = pos.add(new BABYLON.Vector3(0, 0.5, 0));
+                            spawnMarker.material = spawnPointMat; spawnMarker.isPickable = true; spawnMarker.visibility = isEditorMode ? 1 : 0;
+                            spawnMarker.metadata = { type: "spawnPoint", enemyType: selectedEnemyTypeForSpawn };
+                            spawnPoints.push(spawnMarker);
+                            selectedEditorObject = spawnMarker;
+                            gizmoManager.attachToMesh(spawnMarker);
+                            gizmoManager.positionGizmoEnabled = true;
+                            editorModeAction = "move"; updateEditorButtons(btnMove);
+                        }
+                        break;
+                    case "setPlayerStart":
+                        if (mesh === ground) {
+                            let playerStartMarker = scene.getMeshByName("playerStartMarker");
+                            if (!playerStartMarker) {
+                                playerStartMarker = BABYLON.MeshBuilder.CreateBox("playerStartMarker", {size: 1}, scene);
+                                playerStartMarker.material = playerStartMat; playerStartMarker.isPickable = true;
+                            }
+                            playerStartMarker.position = pos.add(new BABYLON.Vector3(0, 0.5, 0));
+                            playerStartMarker.visibility = isEditorMode ? 1 : 0;
+                            playerStartPos = playerStartMarker.position.clone(); playerStartPos.y = 0.9;
+                        }
+                        break;
+                }
+            };
+
+            // --- NUEVO: SISTEMA DE VEHICULOS ---
+            const createVehicleMesh = (position) => {
+                // Cuerpo
+                const body = BABYLON.MeshBuilder.CreateBox("vehicleBody", {width: 2.5, height: 1.2, depth: 4.5}, scene);
+                body.position = position.clone();
+                const bodyMat = new BABYLON.StandardMaterial("vBodyMat", scene);
+                bodyMat.diffuseColor = new BABYLON.Color3(0.3, 0.3, 0.35); // Gris azulado militar
+                body.material = bodyMat;
+                body.checkCollisions = true;
+                shadowGenerator.addShadowCaster(body);
+
+                // Ruedas
+                const wheelMat = new BABYLON.StandardMaterial("wheelMat", scene);
+                wheelMat.diffuseColor = new BABYLON.Color3(0.1, 0.1, 0.1);
+                const wheels = [];
+                const wheelPos = [
+                    new BABYLON.Vector3(1.4, -0.4, 1.5), new BABYLON.Vector3(-1.4, -0.4, 1.5),
+                    new BABYLON.Vector3(1.4, -0.4, -1.5), new BABYLON.Vector3(-1.4, -0.4, -1.5)
+                ];
+                wheelPos.forEach(p => {
+                    const w = BABYLON.MeshBuilder.CreateCylinder("wheel", {diameter: 1.2, height: 0.5}, scene);
+                    w.rotation.z = Math.PI / 2;
+                    w.position = p;
+                    w.parent = body;
+                    w.material = wheelMat;
+                    shadowGenerator.addShadowCaster(w);
+                    wheels.push(w);
+                });
+
+                // Torreta
+                const turret = BABYLON.MeshBuilder.CreateBox("turret", {width: 1.2, height: 0.6, depth: 1.2}, scene);
+                turret.position.y = 0.9;
+                turret.parent = body;
+                turret.material = bodyMat;
+                
+                // Cañon
+                const barrel = BABYLON.MeshBuilder.CreateCylinder("barrel", {diameter: 0.2, height: 2}, scene);
+                barrel.rotation.x = Math.PI / 2;
+                barrel.position.z = 1;
+                barrel.position.y = 0;
+                barrel.parent = turret;
+                barrel.material = new BABYLON.StandardMaterial("barrelMat", scene);
+                barrel.material.diffuseColor = new BABYLON.Color3(0.1, 0.1, 0.1);
+
+                // Sirena Naranja
+                const sirenMesh = BABYLON.MeshBuilder.CreateCylinder("siren", {diameter: 0.3, height: 0.4}, scene);
+                sirenMesh.position = new BABYLON.Vector3(0, 0.6, -1.5); // Atras en el techo
+                sirenMesh.parent = body;
+                const sirenMat = new BABYLON.StandardMaterial("sirenMat", scene);
+                sirenMat.emissiveColor = new BABYLON.Color3(1, 0.5, 0); // Naranja
+                sirenMat.diffuseColor = new BABYLON.Color3(1, 0.5, 0);
+                sirenMesh.material = sirenMat;
+
+                // Luces del vehiculo (apagadas al inicio)
+                const vehicleHeadlight = new BABYLON.SpotLight("vHead", new BABYLON.Vector3(0, 0, 2.3), new BABYLON.Vector3(0, -0.2, 1), Math.PI / 2, 20, scene);
+                vehicleHeadlight.parent = body; vehicleHeadlight.diffuse = new BABYLON.Color3(1, 1, 0.8); vehicleHeadlight.intensity = 0; vehicleHeadlight.range = 100;
+
+                const sirenLight = new BABYLON.PointLight("vSiren", new BABYLON.Vector3(0, 1.5, -1.5), scene);
+                sirenLight.parent = body; sirenLight.diffuse = new BABYLON.Color3(1, 0.5, 0); sirenLight.intensity = 0; sirenLight.range = 30;
+
+                // Metadata para logica
+                body.metadata = { 
+                    type: "vehicle", 
+                    wheels: wheels, 
+                    turret: turret, 
+                    barrel: barrel,
+                    sirenMesh: sirenMesh,
+                    headlight: vehicleHeadlight,
+                    sirenLight: sirenLight,
+                    speed: 0,
+                    rotationSpeed: 0,
+                    sirenRotation: 0
+                };
+
+                vehicles.push(body);
+                return body;
+            };
+
+            const toggleVehicleEntry = () => {
+                if (isDriving) {
+                    // BAJAR DEL VEHICULO
+                    isDriving = false;
+                    player.setEnabled(true);
+                    player.position = currentVehicle.position.add(currentVehicle.right.scale(-3)); // Bajar a la izquierda
+                    player.position.y = 0.9;
+                    
+                    // Apagar luces vehiculo
+                    currentVehicle.metadata.headlight.intensity = 0;
+                    currentVehicle.metadata.sirenLight.intensity = 0;
+                    
+                    currentVehicle = null;
+                    // Reset camara
+                    camera.target.x = player.position.x;
+                    camera.target.z = player.position.z;
+                    
+                    flashlight.intensity = 8.0; // Prender linterna jugador
+                    updateHUD();
+                } else {
+                    // INTENTAR SUBIR
+                    let nearest = null;
+                    let minDst = 4; // Distancia maxima para subir
+                    for(let v of vehicles) {
+                        let d = BABYLON.Vector3.Distance(player.position, v.position);
+                        if (d < minDst) { minDst = d; nearest = v; }
+                    }
+
+                    if (nearest) {
+                        isDriving = true;
+                        currentVehicle = nearest;
+                        player.setEnabled(false); // Ocultar jugador
+                        
+                        // Prender luces vehiculo
+                        currentVehicle.metadata.headlight.intensity = 15;
+                        currentVehicle.metadata.sirenLight.intensity = 2;
+                        
+                        flashlight.intensity = 0; // Apagar linterna jugador
+                        updateHUD();
+                    }
+                }
+            };
+
+            const saveSceneData = () => {
+                const data = {
+                    spawnPoints: spawnPoints.map(sp => ({ position: sp.position.asArray(), enemyType: sp.metadata.enemyType })),
+                    playerStart: playerStartPos.asArray(),
+                    editorObjects: editorObjects.filter(obj => obj.name.startsWith("editor")).map(obj => ({ type: obj.name.includes("Cube") ? "cube" : "wall", position: obj.position.asArray(), rotation: obj.rotation.asArray() })),
+                    vehicles: vehicles.map(v => ({ position: v.position.asArray(), rotation: v.rotation.asArray() }))
+                };
+                const jsonString = JSON.stringify(data);
+                localStorage.setItem("marineSurvivalSceneData", jsonString);
+
+                const blob = new Blob([jsonString], { type: "application/json" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url; a.download = "sceneData.json"; a.click();
+                URL.revokeObjectURL(url);
+                console.log("Scene data saved.");
+            };
+
+            const loadSceneData = () => {
+                const jsonString = localStorage.getItem("marineSurvivalSceneData");
+                if (jsonString) {
+                    const data = JSON.parse(jsonString);
+                    spawnPoints.forEach(sp => sp.dispose()); spawnPoints = [];
+                    editorObjects.forEach(eo => eo.dispose()); editorObjects = [];
+                    vehicles.forEach(v => v.dispose()); vehicles = [];
+                    const pStart = scene.getMeshByName("playerStartMarker"); if(pStart) pStart.dispose();
+
+                    if (data.spawnPoints) {
+                        data.spawnPoints.forEach(spData => {
+                            const spawnMarker = BABYLON.MeshBuilder.CreateBox("spawnPoint", {size: 1}, scene);
+                            spawnMarker.position = BABYLON.Vector3.FromArray(spData.position);
+                            spawnMarker.material = spawnPointMat; spawnMarker.isPickable = true; spawnMarker.visibility = 0; 
+                            spawnMarker.metadata = { type: "spawnPoint", enemyType: spData.enemyType };
+                            spawnPoints.push(spawnMarker);
+                        });
+                    }
+                    if (data.playerStart) {
+                        playerStartPos = BABYLON.Vector3.FromArray(data.playerStart); playerStartPos.y = 0.9;
+                        const playerStartMarker = BABYLON.MeshBuilder.CreateBox("playerStartMarker", {size: 1}, scene);
+                        playerStartMarker.position = BABYLON.Vector3.FromArray(data.playerStart);
+                        playerStartMarker.material = playerStartMat; playerStartMarker.isPickable = true; playerStartMarker.visibility = 0; 
+                    }
+                    if (data.editorObjects) {
+                        data.editorObjects.forEach(objData => {
+                            let mesh;
+                            if (objData.type === "cube") mesh = BABYLON.MeshBuilder.CreateBox("editorCube", {size: 2}, scene);
+                            else mesh = BABYLON.MeshBuilder.CreateBox("editorWall", {width: 5, height: 3, depth: 0.5}, scene);
+                            mesh.position = BABYLON.Vector3.FromArray(objData.position);
+                            mesh.rotation = BABYLON.Vector3.FromArray(objData.rotation);
+                            mesh.material = editorCubeMat;
+                            mesh.checkCollisions = true;
+                            editorObjects.push(mesh);
+                            shadowGenerator.addShadowCaster(mesh);
+                        });
+                    }
+                    if (data.vehicles) {
+                        data.vehicles.forEach(vData => {
+                            const v = createVehicleMesh(BABYLON.Vector3.FromArray(vData.position));
+                            v.rotation = BABYLON.Vector3.FromArray(vData.rotation);
+                        });
+                    }
+                    console.log("Scene data loaded.");
+                }
+            };
+
+            const resetGame = () => {
+                enemies.forEach(e => e.dispose()); enemies.length = 0;
+                projectiles.forEach(p => (p.mesh || p).dispose()); projectiles.length = 0;
+                drops.forEach(d => d.mesh.dispose()); drops.length = 0;
+                
+                playerHealth = playerMaxHealth; playerArmor = 0; playerXP = 0; playerLevel = 1; playerMaxXP = 100; gold = 0;
+                currentWave = 1; enemiesKilledInWave = 0; enemiesRequiredForWave = 20; currentSpawnRate = baseSpawnRate; currentEnemyDamage = baseEnemyDamage;
+                time = 0; ammo = 100; isReloading = false;
+                rifleDamage = 35; machineGunRate = 100; droneHealLevel = 0; droneAttackLevel = 0; unlockedWeapons = { 1: true, 2: false, 3: false, 4: false }; currentWeapon = 1;
+                
+                player.position = playerStartPos.clone();
+                player.setEnabled(true);
+                isDriving = false; currentVehicle = null;
+                flashlight.intensity = 8.0;
+
+                camera.target.x = player.position.x; camera.target.z = player.position.z;
+                
+                spawnPoints.forEach(sp => sp.visibility = 0);
+                const pStart = scene.getMeshByName("playerStartMarker"); if(pStart) pStart.visibility = 0;
+                
+                // Resetear vehiculos si es necesario (apagarlos)
+                vehicles.forEach(v => {
+                    v.metadata.headlight.intensity = 0;
+                    v.metadata.sirenLight.intensity = 0;
+                });
+
+                updateHUD(); updateShopUI();
+            };
+
+            loadSceneData(); 
+            if (spawnPoints.length === 0 && !scene.getMeshByName("playerStartMarker")) {
+                playerStartPos = new BABYLON.Vector3(0, 0.9, 0);
+            }
+            resetGame(); 
+
+            window.addEventListener("keydown", (ev) => {
+                if(ev.key === "Escape" && !isEditorMode) { isPaused = !isPaused; shopContainer.isVisible = isPaused; if(isPaused) { updateShopUI(); canvas.style.cursor = cursorBlueArrow; } else { canvas.style.cursor = "crosshair"; } }
+                if(ev.key.toLowerCase() === "o") { toggleEditorMode(); } 
+                if(ev.key.toLowerCase() === "e" && !isEditorMode && !isPaused) { toggleVehicleEntry(); } // TECLA E
+            });
+
+            // --- LOOT ---
+            const dropMats = { gold: new BABYLON.StandardMaterial("goldM", scene), xp: new BABYLON.StandardMaterial("xpM", scene) };
+            dropMats.gold.diffuseColor = new BABYLON.Color3(1, 0.8, 0); dropMats.gold.emissiveColor = new BABYLON.Color3(0.5, 0.4, 0);
+            dropMats.xp.diffuseColor = new BABYLON.Color3(0, 0.5, 1); dropMats.xp.emissiveColor = new BABYLON.Color3(0, 0.2, 0.5);
+
+            const spawnSpecificItem = (pos, type) => {
+                let mesh;
+                if(type === "gold") {
+                    mesh = BABYLON.MeshBuilder.CreateCylinder("coin", {diameter: 0.5, height: 0.1}, scene);
+                    mesh.rotation.x = Math.PI/2; mesh.material = dropMats.gold;
+                } else {
+                    mesh = BABYLON.MeshBuilder.CreateSphere("orb", {diameter: 0.4}, scene); mesh.material = dropMats.xp;
+                }
+                mesh.position = pos.clone();
+                mesh.position.y = 1;
+                mesh.position.x += (Math.random() - 0.5); mesh.position.z += (Math.random() - 0.5);
+                gl.addIncludedOnlyMesh(mesh);
+                drops.push({ mesh: mesh, type: type, rotationSpeed: Math.random() * 0.1 });
+            };
+            const spawnLoot = (pos) => { spawnSpecificItem(pos, "gold"); spawnSpecificItem(pos, "xp"); };
+
+            // --- EFECTOS VISUALES ---
+            const createFloatingText = (pos, msg, color) => {
+                const anchor = new BABYLON.TransformNode("a", scene); anchor.position = pos.clone(); anchor.position.y += 2;
+                const rect = new BABYLON.GUI.Rectangle(); rect.width = "200px"; rect.height = "40px"; rect.thickness = 0;
+                advancedTexture.addControl(rect); rect.linkWithMesh(anchor); rect.linkOffsetY = -50;
+                const txt = new BABYLON.GUI.TextBlock(); txt.text = msg; txt.color = color; txt.fontWeight = "bold"; txt.fontSize = 24; rect.addControl(txt);
+                let f=0;
+                const obs = scene.onBeforeRenderObservable.add(()=>{ if(isPaused) return; f++; anchor.position.y += 0.05; rect.alpha -= 0.02; if(f>50) { rect.dispose(); anchor.dispose(); scene.onBeforeRenderObservable.remove(obs); } });
+            };
+
+            const goreMat = new BABYLON.StandardMaterial("goreMat", scene);
+            goreMat.diffuseColor = new BABYLON.Color3(0.2, 1, 0.2); goreMat.emissiveColor = new BABYLON.Color3(0.2, 1, 0.2); goreMat.disableLighting = true;
+
+            const spawnGore = (position) => {
+                for(let i=0; i<6; i++) {
+                    const drop = BABYLON.MeshBuilder.CreateSphere("g", {diameter: 0.15}, scene);
+                    drop.material = goreMat; drop.position = position.clone();
+                    const vel = new BABYLON.Vector3((Math.random()-0.5)*0.5, Math.random()*0.5, (Math.random()-0.5)*0.5);
+                    gl.addIncludedOnlyMesh(drop);
+                    let life = 0;
+                    const anim = scene.onBeforeRenderObservable.add(() => {
+                        if(isPaused) return; life++; vel.y -= 0.02; drop.position.addInPlace(vel);
+                        if(drop.position.y < 0) drop.position.y = 0;
+                        if(life > 30) { drop.dispose(); scene.onBeforeRenderObservable.remove(anim); }
+                    });
+                }
+            };
+
+            const spawnDeathExplosion = (position) => {
+                for(let i=0; i<30; i++) { 
+                    const drop = BABYLON.MeshBuilder.CreateSphere("ex", {diameter: Math.random()*0.15 + 0.05}, scene);
+                    drop.material = goreMat; drop.position = position.clone();
+                    const vel = new BABYLON.Vector3((Math.random()-0.5), Math.random()*0.8, (Math.random()-0.5)).scale(0.8);
+                    gl.addIncludedOnlyMesh(drop);
+                    let life = 0;
+                    const anim = scene.onBeforeRenderObservable.add(() => {
+                        if(isPaused) return; life++; vel.y -= 0.02; drop.position.addInPlace(vel);
+                        if(drop.position.y < 0) { drop.position.y = 0; vel.x *= 0.8; vel.z *= 0.8; }
+                        if(life > 60) { drop.dispose(); scene.onBeforeRenderObservable.remove(anim); }
+                    });
+                }
+            };
+
+            const advanceWave = () => {
+                if (currentWave >= maxWaves) return;
+                currentWave++; enemiesKilledInWave = 0; enemiesRequiredForWave += 10;
+                currentSpawnRate = currentSpawnRate * 0.9; currentEnemyDamage = currentEnemyDamage * 1.05;
+                waveTitle.text = "WAVE " + currentWave;
+                isPaused = true; shopContainer.isVisible = true; updateShopUI(); canvas.style.cursor = cursorBlueArrow;
+            };
+
+            const applyDamage = (e, dmg) => {
+                if(!e.metadata || e.isDisposed()) return;
+                e.metadata.hp -= dmg; 
+                createFloatingText(e.position, dmg, "#FF1493");
+                spawnGore(e.position);
+                if(e.material) {
+                    if(!e.metadata.originalEmissive) e.metadata.originalEmissive = e.material.emissiveColor.clone();
+                    e.material.emissiveColor = new BABYLON.Color3(1, 1, 1);
+                }
+                setTimeout(() => { if(e && e.material && e.metadata.originalEmissive) e.material.emissiveColor = e.metadata.originalEmissive; }, 50);
+
+                if(e.metadata.hp <= 0) { 
+                    spawnLoot(e.position); spawnDeathExplosion(e.position);
+                    enemiesKilledInWave++; updateHUD(); 
+                    if(enemiesKilledInWave >= enemiesRequiredForWave) advanceWave();
+                    e.dispose(); const idx = enemies.indexOf(e); if(idx !== -1) enemies.splice(idx, 1); 
+                }
+            };
+
+            const takePlayerDamage = (amt) => {
+                // Si el jugador conduce, el vehiculo absorbe daño (o es invulnerable)
+                if (isDriving) {
+                    // Podriamos hacer que el vehiculo tenga vida, por ahora lo hacemos invulnerable
+                    return; 
+                }
+
+                const reducedDmg = amt * (1 - (playerArmor/100));
+                playerHealth -= reducedDmg;
+                if(damageAlpha < 0.1) damageAlpha = 0.3; damageDiv.style.opacity = damageAlpha;
+                updateHUD();
+                if(playerHealth <= 0) { isPaused = true; const go = new BABYLON.GUI.TextBlock(); go.text="MISION FALLIDA"; go.fontSize=80; go.color="red"; advancedTexture.addControl(go); }
+            };
+
+            // --- ARMAS ---
+            const reload = () => {
+                if(isReloading || ammo === 100) return;
+                isReloading = true; updateHUD();
+                setTimeout(() => { ammo = 100; isReloading = false; updateHUD(); }, 1500);
+            };
+            const fireWeapon = () => {
+                const now = Date.now();
+                let rate = machineGunRate; if(currentWeapon === 2) rate = 50; if(currentWeapon === 3) rate = 500; if(currentWeapon === 4) rate = 350; 
+                
+                // Si conduce, usa la cadencia del rifle por defecto para la torreta
+                if (isDriving) rate = 100;
+
+                if (now - lastFireTime < rate) return;
+                
+                // Municion infinita en vehiculo
+                if (!isDriving) {
+                    if (currentWeapon === 1) { if(isReloading) return; if(ammo <= 0) { reload(); return; } ammo--; updateHUD(); }
+                }
+
+                lastFireTime = now; spawnMuzzleFlash(); 
+                
+                if (isDriving) {
+                    // Dispara siempre balas basicas desde el vehiculo
+                    spawnBullet(); 
+                } else {
+                    if(currentWeapon === 1) spawnBullet(); else if(currentWeapon === 2) spawnFlameProjectile(); else if(currentWeapon === 3) spawnPlasma(); else if(currentWeapon === 4) spawnLaser();
+                }
+            };
+
+            const bulletMat = new BABYLON.StandardMaterial("bulletMat", scene); bulletMat.emissiveColor = new BABYLON.Color3(1, 1, 0.5); bulletMat.disableLighting = true;
+            const muzzleFlashMat = new BABYLON.StandardMaterial("muzzleMat", scene); muzzleFlashMat.emissiveColor = new BABYLON.Color3(1, 0.8, 0.1); muzzleFlashMat.disableLighting = true;
+            const plasmaMat = new BABYLON.StandardMaterial("plasmaMat", scene); plasmaMat.emissiveColor = new BABYLON.Color3(0, 1, 1); plasmaMat.disableLighting = true;
+            const flameMat = new BABYLON.StandardMaterial("flameMat", scene); flameMat.emissiveColor = new BABYLON.Color3(1, 0.3, 0); flameMat.disableLighting = true;
+            const laserMat = new BABYLON.StandardMaterial("laserMat", scene); laserMat.emissiveColor = new BABYLON.Color3(1, 0, 0); laserMat.disableLighting = true;
+
+            const getSpawnPos = () => { 
+                if (isDriving && currentVehicle) {
+                    // Punta del cañon del vehiculo
+                    return currentVehicle.metadata.barrel.getAbsolutePosition().clone().add(currentVehicle.metadata.barrel.up.scale(1.2)); 
+                }
+                const p = player.position.clone().add(player.forward.scale(0.8)).add(player.right.scale(0.5)); p.y = 0.6; return p; 
+            };
+
+            const getAimDir = () => {
+                if (isDriving && currentVehicle) {
+                    return currentVehicle.metadata.barrel.up.clone(); // El cilindro del cañon está rotado en X, su "up" es hacia adelante
+                }
+                return player.forward.clone();
+            }
+
+            const spawnBullet = () => {
+                const origin = getSpawnPos(); 
+                const dir = getAimDir(); 
+                dir.x += (Math.random()-0.5)*0.03; dir.z += (Math.random()-0.5)*0.03; dir.normalize();
+                
+                const bullet = BABYLON.MeshBuilder.CreateSphere("b", {diameter: 0.6}, scene); bullet.scaling.z = 2; bullet.position = origin; bullet.lookAt(origin.add(dir)); bullet.material = bulletMat;
+                gl.addIncludedOnlyMesh(bullet); bullet.metadata = { dir: dir, speed: 70, damage: rifleDamage, life: 100 }; projectiles.push(bullet);
+            };
+            const spawnFlameProjectile = () => {
+                const origin = getSpawnPos(); const dir = player.forward.clone(); dir.x += (Math.random()-0.5)*0.2; dir.z += (Math.random()-0.5)*0.2; dir.normalize();
+                const flame = BABYLON.MeshBuilder.CreateSphere("f", {diameter: 0.6}, scene); flame.scaling.z = 4; flame.position = origin; flame.lookAt(origin.add(dir)); flame.material = flameMat;
+                gl.addIncludedOnlyMesh(flame); flame.metadata = { dir: dir, speed: 40, damage: 5, life: 30 }; projectiles.push(flame);
+            };
+            const spawnPlasma = () => {
+                const origin = getSpawnPos(); const ball = BABYLON.MeshBuilder.CreateSphere("p", {diameter: 0.8}, scene); ball.position = origin; ball.material = plasmaMat; gl.addIncludedOnlyMesh(ball);
+                ball.metadata = { dir: player.forward.clone(), speed: 30, damage: 80, life: 150 }; projectiles.push(ball);
+            };
+            const spawnLaser = () => {
+                const origin = getSpawnPos(); const laser = BABYLON.MeshBuilder.CreateCylinder("l", {height: 4, diameter: 0.1}, scene);
+                laser.rotation.x = Math.PI/2; laser.position = origin; laser.lookAt(origin.add(player.forward)); laser.material = laserMat; gl.addIncludedOnlyMesh(laser);
+                laser.metadata = { dir: player.forward.clone(), speed: 150, damage: rifleDamage * 2, life: 100 }; projectiles.push(laser);
+            };
+            const spawnMuzzleFlash = () => {
+                const pos = getSpawnPos(); const flash = BABYLON.MeshBuilder.CreateSphere("f", {diameter: 0.2}, scene); flash.position = pos; flash.material = muzzleFlashMat; gl.addIncludedOnlyMesh(flash); setTimeout(()=>flash.dispose(), 40);
+            };
+
+            // --- DRONES ---
+            const createDrone = (offset) => {
+                const drone = BABYLON.MeshBuilder.CreateSphere("drone", {diameter: 0.5}, scene);
+                const dMat = new BABYLON.StandardMaterial("dMat", scene);
+                dMat.diffuseColor = new BABYLON.Color3(0.1, 0.1, 0.1); dMat.emissiveColor = new BABYLON.Color3(0, 0.5, 1);
+                drone.material = dMat;
+                const eye = BABYLON.MeshBuilder.CreateSphere("eye", {diameter: 0.2}, scene);
+                eye.parent = drone; eye.position.z = 0.2; eye.position.y = 0.1;
+                const eMat = new BABYLON.StandardMaterial("eMat", scene);
+                eMat.emissiveColor = new BABYLON.Color3(1, 0, 0); eye.material = eMat; 
+                const droneLight = new BABYLON.SpotLight("dL", new BABYLON.Vector3(0, 0, 0), new BABYLON.Vector3(0, -1, 0), Math.PI / 1.5, 5, scene);
+                droneLight.parent = drone; droneLight.diffuse = new BABYLON.Color3(0, 1, 1); droneLight.intensity = 3.0; droneLight.range = 20;
+                drone.metadata = { offset: offset, lastAction: 0, angle: Math.random() * Math.PI * 2 };
+                shadowGenerator.addShadowCaster(drone);
+                drones.push(drone);
+            };
+            createDrone(new BABYLON.Vector3(1.5, 1.5, -1.5));
+
+            // --- ENEMIGOS ---
+            const alienMatBase = new BABYLON.StandardMaterial("alienMatBase", scene);
+            alienMatBase.diffuseColor = new BABYLON.Color3(1, 0, 1); alienMatBase.emissiveColor = new BABYLON.Color3(0, 0, 0); alienMatBase.specularColor = new BABYLON.Color3(0, 0, 0); alienMatBase.maxSimultaneousLights = 10;
+            const wormMatBase = new BABYLON.StandardMaterial("wormMatBase", scene);
+            wormMatBase.diffuseColor = new BABYLON.Color3(1, 0, 1); wormMatBase.emissiveColor = new BABYLON.Color3(0, 0, 0); wormMatBase.specularColor = new BABYLON.Color3(0, 0, 0); wormMatBase.maxSimultaneousLights = 10;
+
+            const spawnEnemy = () => {
+                if(enemies.length > 35 || isPaused || spawnPoints.length === 0) return;
+                const spawnPoint = spawnPoints[Math.floor(Math.random() * spawnPoints.length)];
+                const pos = spawnPoint.position.clone(); pos.y = 1;
+                const enemyType = spawnPoint.metadata.enemyType || "alien";
+                const isWorm = enemyType === "worm";
+                let enemyMesh;
+                if (isWorm) {
+                    enemyMesh = BABYLON.MeshBuilder.CreateTube("worm", {path: [new BABYLON.Vector3(0,0,-1), new BABYLON.Vector3(0,0,1)], radius: 0.4, cap: BABYLON.Mesh.CAP_ALL}, scene);
+                    enemyMesh.position = pos; enemyMesh.position.y = 0.5; 
+                    enemyMesh.material = wormMatBase.clone("wMat"+Date.now()); 
+                    enemyMesh.rotation.y = Math.random() * Math.PI * 2;
+                    enemyMesh.metadata = { type: "worm", hp: 30 + (playerLevel * 5), animOffset: Math.random()*100, baseScaleZ: 1 };
+                    shadowGenerator.addShadowCaster(enemyMesh);
+                } else {
+                    const body = BABYLON.MeshBuilder.CreateCylinder("eBody", {height:2, diameter:0.8}, scene); 
+                    body.rotation.x = Math.PI/2; body.position = pos; 
+                    const mat = alienMatBase.clone("aMat"+Date.now()); body.material = mat;
+                    const head = BABYLON.MeshBuilder.CreateSphere("head", {diameter: 1}, scene);
+                    head.scaling = new BABYLON.Vector3(0.8, 1, 2.5); head.position = new BABYLON.Vector3(0, 1, -0.5); head.parent = body; head.material = mat;
+                    const armL = BABYLON.MeshBuilder.CreateBox("armL", {height: 2.5, width: 0.3, depth: 0.3}, scene);
+                    armL.position = new BABYLON.Vector3(0.8, 0, 0.5); armL.rotation.z = Math.PI/2; armL.parent = body; armL.material = mat;
+                    const armR = BABYLON.MeshBuilder.CreateBox("armR", {height: 2.5, width: 0.3, depth: 0.3}, scene);
+                    armR.position = new BABYLON.Vector3(-0.8, 0, 0.5); armR.rotation.z = Math.PI/2; armR.parent = body; armR.material = mat;
+                    enemyMesh = body;
+                    enemyMesh.metadata = { type: "alien", hp: 50 + (playerLevel*10), animOffset: Math.random()*100, armL: armL, armR: armR }; 
+                    shadowGenerator.addShadowCaster(body);
+                }
+                enemies.push(enemyMesh);
+            };
+
+            // INPUTS Y RENDER
+            scene.onPointerObservable.add((pi) => { 
+                if (pi.type === BABYLON.PointerEventTypes.POINTERDOWN) {
+                    if (pi.event.button === 0) {
+                        isMouseDown = true;
+                        if (isEditorMode) handleEditorClick(pi.pickInfo);
+                    }
+                    if (pi.event.button === 1) isMiddleMouseDown = true;
+                }
+                if (pi.type === BABYLON.PointerEventTypes.POINTERUP) {
+                    if (pi.event.button === 0) isMouseDown = false;
+                    if (pi.event.button === 1) isMiddleMouseDown = false;
+                }
+                if (pi.type === BABYLON.PointerEventTypes.POINTERMOVE) {
+                    if (isEditorMode && isMiddleMouseDown && selectedEditorObject) {
+                        const sensitivity = 0.02;
+                        const dx = pi.event.movementX;
+                        selectedEditorObject.rotation.y += dx * sensitivity;
+                    }
+                }
+            });
+
+            scene.actionManager = new BABYLON.ActionManager(scene);
+            scene.actionManager.registerAction(new BABYLON.ExecuteCodeAction(BABYLON.ActionManager.OnKeyDownTrigger, (evt) => {
+                inputMap[evt.sourceEvent.key.toLowerCase()] = true;
+                if(!isEditorMode && !isDriving) { // Solo cambiar armas si NO conduce
+                    if(evt.sourceEvent.key.toLowerCase() === 'r') reload();
+                    if(evt.sourceEvent.key === '1' && unlockedWeapons[1]) { currentWeapon = 1; updateHUD(); }
+                    if(evt.sourceEvent.key === '2' && unlockedWeapons[2]) { currentWeapon = 2; updateHUD(); }
+                    if(evt.sourceEvent.key === '3' && unlockedWeapons[3]) { currentWeapon = 3; updateHUD(); }
+                    if(evt.sourceEvent.key === '4' && unlockedWeapons[4]) { currentWeapon = 4; updateHUD(); }
+                }
+            }));
+            scene.actionManager.registerAction(new BABYLON.ExecuteCodeAction(BABYLON.ActionManager.OnKeyUpTrigger, (evt) => inputMap[evt.sourceEvent.key.toLowerCase()] = false));
+
+            // PIPELINE POST-PROCESADO
+            const pipeline = new BABYLON.DefaultRenderingPipeline("default", true, scene, [camera]);
+            pipeline.bloomEnabled = true;
+            pipeline.bloomThreshold = 0.2;
+            pipeline.bloomWeight = 0.5;
+            pipeline.bloomKernel = 64;
+            pipeline.fxaaEnabled = true; 
+
+            scene.registerBeforeRender(() => {
+                const dt = engine.getDeltaTime()/1000; 
+
+                // --- LOGICA DE EDITOR ---
+                if (isEditorMode) {
+                    const camSpeed = 20 * dt; 
+                    if(inputMap["w"]) camera.target.z += camSpeed;
+                    if(inputMap["s"]) camera.target.z -= camSpeed;
+                    if(inputMap["a"]) camera.target.x -= camSpeed;
+                    if(inputMap["d"]) camera.target.x += camSpeed;
+
+                    if (selectedEditorObject) {
+                        const objMoveSpeed = 10 * dt;
+                        if(inputMap["arrowup"]) selectedEditorObject.position.z += objMoveSpeed;
+                        if(inputMap["arrowdown"]) selectedEditorObject.position.z -= objMoveSpeed;
+                        if(inputMap["arrowleft"]) selectedEditorObject.position.x -= objMoveSpeed;
+                        if(inputMap["arrowright"]) selectedEditorObject.position.x += objMoveSpeed;
+                    }
+                    return; 
+                }
+
+                // --- LOGICA DE JUEGO ---
+                if(isPaused) return;
+                
+                time += dt;
+                if(damageAlpha > 0) { damageAlpha -= 0.01; if(damageAlpha < 0) damageAlpha = 0; damageDiv.style.opacity = damageAlpha; }
+                if (Date.now() - lastSpawnTime > currentSpawnRate) { spawnEnemy(); lastSpawnTime = Date.now(); }
+
+                const pick = scene.pick(scene.pointerX, scene.pointerY, (m) => m === ground || editorObjects.includes(m) || vehicles.includes(m)); 
+                
+                // Logica de Apuntar y Moverse
+                if (isDriving && currentVehicle) {
+                    // CONDUCCION DE VEHICULO
+                    let accel = 0; let steer = 0;
+                    if(inputMap["w"]) accel = 20 * dt;
+                    if(inputMap["s"]) accel = -15 * dt;
+                    if(inputMap["a"]) steer = -3 * dt;
+                    if(inputMap["d"]) steer = 3 * dt;
+
+                    // Fisicas simples arcade
+                    if (accel !== 0) {
+                        currentVehicle.metadata.speed = BABYLON.Scalar.Lerp(currentVehicle.metadata.speed, accel > 0 ? 15 : -8, 2 * dt);
+                        currentVehicle.rotation.y += steer * (Math.abs(currentVehicle.metadata.speed) > 1 ? 1 : 0);
+                    } else {
+                        currentVehicle.metadata.speed = BABYLON.Scalar.Lerp(currentVehicle.metadata.speed, 0, 3 * dt);
+                    }
+
+                    const velocity = currentVehicle.forward.scale(currentVehicle.metadata.speed * dt);
+                    currentVehicle.moveWithCollisions(velocity);
+                    
+                    // Actualizar posicion jugador para que viaje con el vehiculo
+                    player.position = currentVehicle.position.clone();
+
+                    // Animar ruedas
+                    currentVehicle.metadata.wheels.forEach(w => w.rotation.x += currentVehicle.metadata.speed * dt);
+                    
+                    // Animar Sirena
+                    currentVehicle.metadata.sirenRotation += 10 * dt;
+                    currentVehicle.metadata.sirenMesh.rotation.y = currentVehicle.metadata.sirenRotation;
+                    // Efecto luz sirena (parpadeo rotativo simulado con intensidad)
+                    currentVehicle.metadata.sirenLight.intensity = 1 + Math.sin(time * 10);
+
+                    // Apuntar Torreta con Mouse
+                    if(pick.hit) { 
+                        const t = pick.pickedPoint; 
+                        t.y = currentVehicle.metadata.turret.getAbsolutePosition().y; 
+                        currentVehicle.metadata.turret.lookAt(t); 
+                    }
+
+                    // Camara sigue al vehiculo
+                    camera.target.x = currentVehicle.position.x; 
+                    camera.target.z = currentVehicle.position.z;
+
+                    updateHUD(); // Actualizar para chequear distancia y texto
+
+                } else {
+                    // MOVIMIENTO A PIE (JUGADOR)
+                    if(pick.hit) { const t = pick.pickedPoint; t.y = player.position.y; player.lookAt(t); }
+                    
+                    let v = new BABYLON.Vector3(0,0,0);
+                    if(inputMap["w"]) v.z = 1; if(inputMap["s"]) v.z = -1; if(inputMap["a"]) v.x = -1; if(inputMap["d"]) v.x = 1;
+                    if(v.length() > 0) {
+                        const moveVec = v.normalize().scale(12*dt);
+                        player.moveWithCollisions(moveVec); 
+                    }
+                    // Camara sigue al jugador
+                    camera.target.x = player.position.x; camera.target.z = player.position.z;
+                    
+                    updateHUD(); // Actualizar para chequear distancia y texto
+                }
+
+                if(isMouseDown) fireWeapon();
+                
+                radarDots.forEach(d => d.dispose()); radarDots = []; const radarRange = 40; 
+                enemies.forEach(e => {
+                    const center = isDriving ? currentVehicle.position : player.position;
+                    const dist = BABYLON.Vector3.Distance(center, e.position);
+                    if (dist < radarRange) {
+                        const dot = new BABYLON.GUI.Ellipse(); dot.width = "6px"; dot.height = "6px"; dot.background = "red";
+                        dot.horizontalAlignment = 2; dot.verticalAlignment = 2;
+                        const scale = 75 / radarRange;
+                        dot.left = (e.position.x - center.x) * scale + "px";
+                        dot.top = (e.position.z - center.z) * -scale + "px";
+                        radarContainer.addControl(dot); radarDots.push(dot);
+                    }
+                });
+
+                drones.forEach((d, i) => {
+                    d.metadata.angle += dt;
+                    const center = isDriving ? currentVehicle.position : player.position;
+                    const targetPos = center.add(new BABYLON.Vector3(Math.cos(d.metadata.angle + i)*2, 1.5, Math.sin(d.metadata.angle + i)*2));
+                    d.position = BABYLON.Vector3.Lerp(d.position, targetPos, 0.05); d.lookAt(center);
+                    if(Date.now() - d.metadata.lastAction > 2000) { 
+                        d.metadata.lastAction = Date.now();
+                        if(droneHealLevel > 0 && playerHealth < playerMaxHealth) { playerHealth = Math.min(playerMaxHealth, playerHealth + (droneHealLevel * 5)); createFloatingText(center, "+HP", "green"); updateHUD(); }
+                        if(droneAttackLevel > 0 && enemies.length > 0) {
+                            let nearest = null; let minDst = 999;
+                            enemies.forEach(e => { const dst = BABYLON.Vector3.Distance(d.position, e.position); if(dst < 20 && dst < minDst) { minDst = dst; nearest = e; } });
+                            if(nearest) {
+                                const m = BABYLON.MeshBuilder.CreateBox("misil", {size: 0.3}, scene); m.position = d.position.clone(); m.lookAt(nearest.position);
+                                m.material = new BABYLON.StandardMaterial("mM", scene); m.material.emissiveColor = new BABYLON.Color3(1,0,0);
+                                projectiles.push({mesh:m, dir: nearest.position.subtract(d.position).normalize(), speed: 40, damage: droneAttackLevel * 20, life: 50});
+                            }
+                        }
+                    }
+                });
+
+                for(let i=drops.length-1; i>=0; i--) {
+                    let d = drops[i]; d.mesh.rotation.y += d.rotationSpeed;
+                    const center = isDriving ? currentVehicle.position : player.position;
+                    if(BABYLON.Vector3.Distance(center, d.mesh.position) < 3.0) { // Mayor radio de recoleccion en vehiculo
+                        if(d.type === "gold") { gold += 10; createFloatingText(center, "+10 Gold", "yellow"); } 
+                        else { playerXP += 20; createFloatingText(center, "+20 XP", "cyan"); if(playerXP >= playerMaxXP) { playerXP = 0; playerMaxXP *= 1.2; playerLevel++; playerHealth = playerMaxHealth; createFloatingText(center, "LEVEL UP!", "white"); } }
+                        updateHUD(); d.mesh.dispose(); drops.splice(i, 1);
+                    }
+                }
+
+                enemies.forEach(e => {
+                    const target = isDriving ? currentVehicle.position : player.position;
+                    e.lookAt(target);
+                    const dir = target.subtract(e.position).normalize().scale(6*dt);
+                    e.moveWithCollisions(dir); 
+                    if (e.metadata.type === "alien") {
+                        const swing = Math.sin(time * 15 + e.metadata.animOffset) * 0.8; 
+                        e.metadata.armL.rotation.z = Math.PI/2 + swing; e.metadata.armR.rotation.z = Math.PI/2 - swing;
+                        e.position.y = 1 + Math.abs(Math.sin(time * 12)) * 0.2;
+                    } else if (e.metadata.type === "worm") {
+                        const stretch = 1 + Math.sin(time * 10 + e.metadata.animOffset) * 0.3;
+                        e.scaling.z = stretch;
+                    }
+                    if(BABYLON.Vector3.Distance(target, e.position) < (isDriving ? 3.5 : 2.5)) {
+                        if(Date.now() - (e.metadata.lastHit || 0) > 1000) { takePlayerDamage(currentEnemyDamage); e.metadata.lastHit = Date.now(); }
+                    }
+                });
+
+                for(let i=projectiles.length-1; i>=0; i--){
+                    let p = projectiles[i]; let mesh = p.mesh || p; if(p.mesh) mesh = p.mesh;
+                    mesh.position.addInPlace((p.dir || p.metadata.dir).scale((p.speed || p.metadata.speed) * dt));
+                    if(p.life) p.life--; else p.metadata.life--;
+                    let hit = false;
+                    for(let j=0; j<enemies.length; j++) {
+                        if(mesh.intersectsMesh(enemies[j], true)) { applyDamage(enemies[j], p.damage || p.metadata.damage); hit = true; break; }
+                    }
+                    if(hit || (p.life !== undefined ? p.life <= 0 : p.metadata.life <= 0)) { mesh.dispose(); projectiles.splice(i,1); }
+                }
+            });
+            updateHUD();
+            
+            scene.collisionsEnabled = true;
+            player.checkCollisions = true;
+            player.ellipsoid = new BABYLON.Vector3(0.5, 0.9, 0.5); 
+
+            return scene;
+        };
+        const scene = createScene();
+        engine.runRenderLoop(() => scene.render());
+        window.addEventListener("resize", () => engine.resize());
+    </script>
+</body>
+</html>
